@@ -143,6 +143,8 @@ class DebugInfoOpCodes(Enum):
     DBG_LINE_RANGE = 15
 
 
+
+
 class FileReader:
     def __init__(self, file):
         self.file_stream = file
@@ -150,6 +152,11 @@ class FileReader:
     def read_bytes(self, size):
         value = self.file_stream[0: size]
         self.file_stream = self.file_stream[size:]
+        return value
+
+    def read_int8(self):
+        value = struct.unpack("c", self.file_stream[0])[0]
+        self.file_stream = self.file_stream[1:]
         return value
 
     def read_dword(self):
@@ -172,12 +179,146 @@ class FileReader:
         return self.file_stream[0:string_size].decode()
 
 
-class DexTypeId:
-    def __init__(self, dex_file, type_id):
+class DexFile:
+    pass
+
+class DexString:
+    def __init__(self, dex_file:DexFile, string_idx:int):
+        if string_idx < 0 or string_idx >= dex_file.string_ids_size:
+            raise Exception("string idx is out of range:" + string_idx)
         self.dex_file = dex_file
-        self.type_id = type_id
+        self.string_idx = string_idx
+
+    def get_string(self) -> str:
+        string_off = FileReader(self.dex_file.data[self.dex_file.string_ids_off + self.string_idx * 4:]).read_dword()
+        string_ptr = self.dex_file.data[string_off:]
+        string_info = leb128.u.decode_reader(io.BytesIO(string_ptr))
+        # MUTF-8编码的 "你好" 对应在这里是 "02 e4 bd a0 e5 a5 bd 00"
+        # 02 是uleb128编码的数, 代表字符个数, 在本例中,"你好" 的字符个数是2
+
+        # uleb128_char_count 代表字符个数,上面"你好"的例子中为 2
+        uleb128_char_count = string_info[0]
+
+        # uleb128_byte_size 代表这个uleb128数所占的字节数, 上面"你好"的例子中为 1
+        uleb128_byte_size = string_info[1]
+
+        return FileReader(string_ptr[uleb128_byte_size:]).read_cstring()
+
+class DexType:
+    def __init__(self, dex_file:DexFile, type_idx:int):
+        if type_idx < 0 or type_idx >= dex_file.type_ids_size:
+            raise Exception("type_idx is out of range:" + type_idx)
+        self.dex_file = dex_file
+        reader = FileReader(dex_file.data[dex_file.type_ids_off + type_idx * 4:])
+        self.type_name_idx = reader.read_dword()
+
+    def get_name(self) -> DexString:
+        return DexString(self.dex_file).get_string(self.type_name_idx)
+
+class DexProto:
+    def __init__(self, dex_file:DexFile, proto_idx :int):
+        if proto_idx <0 or proto_idx >= dex_file.proto_ids_size:
+            raise Exception("proto_idx is out of range:" + proto_idx)
+        self.dex_file = dex_file
+        reader = FileReader(dex_file.data[dex_file.proto_ids_off + proto_idx * 4:])
+        self.shorty_idx = reader.read_dword()
+        self.return_type_idx = reader.read_dword()
+        self.parameters_off = reader.read_dword()
+
+    def get_shorty(self) -> DexString:
+        return DexString(self.dex_file, self.shorty_idx)
+
+    def get_return_type(self):
+        return DexString(self.dex_file, self.return_type_idx)
+
+    def get_parameter_list(self)->list:
+        params = []
+        reader = FileReader(self.dex_file.data[self.parameters_off:])
+        parameter_count = reader.read_dword()
+        for i in range(parameter_count):
+            params.append(DexType(self.dex_file, reader.read_word()))
+        return params
+
+class DexField:
+    def __int__(self, dex_file: DexFile, field_id:int):
+        if field_id < 0 or field_id >= dex_file.field_ids_size:
+            raise Exception("field_id is out of range")
+        self.dex_file = dex_file
+        reader = FileReader(dex_file.data[dex_file.field_ids_off + field_id*8:])
+        self.class_idx = reader.read_word()
+        self.type_idx = reader.read_word()
+        self.name_idx = reader.read_dword()
+
+    def get_class(self):
+        pass
+
+    def get_type(self):
+        return DexType(self.dex_file, self.type_idx)
 
     def get_name(self):
+        return DexString(self.dex_file, self.name_idx)
+
+
+class DexClass:
+    class DexClassData:
+        def __init__(self,dex_file,  class_data_off:int):
+            if class_data_off <0 or class_data_off>=dex_file.file_size:
+                raise Exception("class_data_off is out of range")
+            self.class_data_off = class_data_off
+
+            reader = FileReader(dex_file.data[class_data_off:])
+            static_fields_size = reader.read_bytes(1)
+
+        def get_static_fields_size(self):
+            pass
+
+        def get_instance_fields_size(self):
+            pass
+
+        def get_direct_methods_size(self):
+            pass
+
+        def get_virtual_methods_size(self):
+            pass
+
+
+
+
+    def __init__(self,dex_file:DexFile, class_idx:int):
+        if class_idx < 0 or class_idx >= dex_file.field_ids_size:
+            raise Exception("class_idx is out of range")
+        self.dex_file = dex_file
+        reader = FileReader(dex_file.data[dex_file.class_defs_off + class_idx * 32:])
+        self.class_type_idx = reader.read_dword()
+        self.access_flags = reader.read_dword()
+        self.super_class_idx = reader.read_dword()
+        self.interfaces_off = reader.read_dword()
+        self.source_file_idx = reader.read_dword()
+        self.annotations_off = reader.read_dword()
+        self.class_data_off = reader.read_dword()
+        self.static_values_off = reader.read_dword()
+
+
+
+class DexMethod:
+    def __init__(self, dex_file:DexFile, method_idx:int):
+        self.dex_file = dex_file
+        self.class_idx = 0
+        self.proto_idx = 0
+        self.name_idx = 0
+
+    def get_class(self) -> DexClass:
+        pass
+
+    def get_proto(self) -> DexProto:
+        return DexProto(self.dex_file, self.proto_idx)
+
+    def get_name(self) -> DexString:
+        return DexString(self.dex_file, self.name_idx)
+
+class
+
+
 
 
 class DexFile:
@@ -223,33 +364,15 @@ class DexFile:
             return False
         return True
 
-    def get_string(self, string_idx):
-        if string_idx<0 or string_idx >= self.string_ids_size:
-            return None
-        string_off = FileReader(self.data[self.string_ids_off + string_idx * 4:]).read_dword()
-        string_ptr = self.data[string_off:]
-        string_info = leb128.u.decode_reader(io.BytesIO(string_ptr))
-        # MUTF-8编码的 "你好" 对应在这里是 "02 e4 bd a0 e5 a5 bd 00"
-        # 02 是uleb128编码的数, 代表字符个数, 在本例中,"你好" 的字符个数是2
-
-        # uleb128_char_count 代表字符个数,上面"你好"的例子中为 2
-        uleb128_char_count = string_info[0]
-
-        # uleb128_byte_size 代表这个uleb128数所占的字节数, 上面"你好"的例子中为 1
-        uleb128_byte_size = string_info[1]
-
-        return FileReader(string_ptr[uleb128_byte_size:]).read_cstring()
-
-
 
     def get_method(self, method_idx):
         if method_idx < 0 or method_idx >= self.method_ids_size:
             return None
         reader = FileReader(self.data[self.method_ids_off + method_idx * 8:])
-        method = dict()
-        method["class_idx"] = reader.read_word()
-        method["proto_idx"] = reader.read_word()
-        method["name_idx"] = reader.read_dword()
+        method = DexMethod(self)
+        method.class_idx = reader.read_word()
+        method.proto_idx = reader.read_word()
+        method.name_idx = reader.read_dword()
         return method
 
 
@@ -273,9 +396,6 @@ class DexFile:
         proto["return_type_idx"] = reader.read_dword()
         proto["parameters_off"] = reader.read_dword()
         return proto
-
-    def get_param(self, param_offset):
-        if(param_offset < 0 or param_offset > len(self.data))
 
 
 
